@@ -1,4 +1,4 @@
-name: MJU Notice Alert
+name: Notice Alert
 
 on:
   schedule:
@@ -38,8 +38,8 @@ jobs:
       - name: Commit updated state.json
         run: |
           if git status --porcelain | grep -q "state.json"; then
-            git config user.name "mju-notice-bot"
-            git config user.email "mju-notice-bot@users.noreply.github.com"
+            git config user.name "notice_bot"
+            git config user.email "notice_bot@users.noreply.github.com"
             git add state.json
             git commit -m "Update notice state"
             git push
