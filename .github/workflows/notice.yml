@@ -33,7 +33,7 @@ jobs:
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
           MAIL_FROM: ${{ secrets.MAIL_FROM }}
-        run: python mju_notice_watcher.py
+        run: python notice_watcher.py
 
       - name: Commit updated state.json
         run: |
