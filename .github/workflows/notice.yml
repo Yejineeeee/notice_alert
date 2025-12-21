@@ -1,9 +1,9 @@
-name: Notice Alert
-
 on:
   schedule:
-    # KST 08:00, 11:00, 14:00, 17:00  => UTC 23:00, 02:00, 05:00, 08:00
-    - cron: "0 23,2,5,8 * * *"
+    # KST 월~금 08:00  => UTC 일~목 23:00
+    - cron: "0 23 * * 0-4"
+    # KST 월~금 11:00/14:00/18:00 => UTC 월~금 02:00/05:00/09:00
+    - cron: "0 2,5,9 * * 1-5"
   workflow_dispatch:
 
 permissions:
