@@ -1,3 +1,5 @@
+name: Notice Alert
+
 on:
   schedule:
     # KST 월~금 08:00  => UTC 일~목 23:00
@@ -26,9 +28,22 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run watcher
+      # (선택) 디버그: SMTP_HOST/MAIL_TO가 비어있는지 빠르게 확인 (비번은 절대 출력 X)
+      - name: Debug SMTP env (safe)
+        run: |
+          echo "SMTP_HOST='${SMTP_HOST}'"
+          echo "SMTP_USER='${SMTP_USER}'"
+          echo "MAIL_TO='${MAIL_TO}'"
         env:
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+
+      - name: Run watcher
+        env:
+          # 코드에서 기본값(smtp.gmail.com) 처리하므로 없어도 되지만, 명시해도 OK
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          # SMTP_PORT는 코드에서 기본값 587 처리 + 빈값 방어를 했으니 굳이 주입하지 않음(빈 값 이슈 방지)
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
