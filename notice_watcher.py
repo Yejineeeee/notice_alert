@@ -122,6 +122,7 @@ def extract_articles(list_url: str):
     items.sort(key=sort_key, reverse=True)
     return items
 
+
 def fetch_post_text(post_url: str) -> str:
     r = requests.get(post_url, headers={"User-Agent": UA}, timeout=20)
     r.raise_for_status()
@@ -156,8 +157,8 @@ def summarize_text(text: str, max_chars: int = 180) -> str:
 
     return text[:cut].rstrip() + "…"
 
+
 def send_email(new_by_board):
-    # Defaults + validation (prevents the "empty string" issues you saw)
     smtp_host = _get_env_str("SMTP_HOST", default="smtp.gmail.com")
     smtp_port = _get_env_int("SMTP_PORT", default=587)
     smtp_user = _require_env_str("SMTP_USER")
@@ -172,41 +173,87 @@ def send_email(new_by_board):
     now_kst = datetime.now(KST).strftime("%Y-%m-%d %H:%M")
     total = sum(len(v) for v in new_by_board.values())
 
+    # Subject(메일 제목)은 서식 불가. 텍스트로만.
     active_tags = []
     for board_name, posts in new_by_board.items():
         if posts:
             active_tags.append(BOARD_TAG.get(board_name, board_name))
     tag_prefix = "".join([f"[{t}]" for t in active_tags])
-
     subject = f"{tag_prefix} [명지대 공지 알림] 새 게시물 {total}건 ({now_kst} KST)"
 
-    lines = [f"명지대학교 공지 새 글 알림 ({now_kst} KST)", ""]
+    # ---------- Plain text(대체 본문) ----------
+    text_lines = [f"명지대학교 공지 새 글 알림 ({now_kst} KST)", ""]
     for board_name, posts in new_by_board.items():
         if not posts:
             continue
-        lines.append(f"== {board_name} ({len(posts)}건) ==")
+        text_lines.append(f"== {board_name} ({len(posts)}건) ==")
         for p in posts:
             d = f"({p['date']}) " if p.get("date") else ""
-            lines.append(f"- [{board_name}] {d}{p['title']}")
-            lines.append(f"  {p['url']}")
-        lines.append("")
+            text_lines.append(f"- {d}{p.get('title','')}")
+            if p.get("summary"):
+                text_lines.append(f"  요약: {p.get('summary','')}")
+            text_lines.append(f"  {p.get('url','')}")
+        text_lines.append("")
+
+    # ---------- HTML(카드형 본문) ----------
+    def esc(s: str) -> str:
+        return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    html = []
+    html.append(f"""
+    <div style="font-family: Arial, sans-serif; max-width: 760px;">
+      <h1 style="margin:0 0 6px 0; font-size:22px; font-weight:700;">명지대학교 공지 새 글 알림</h1>
+      <div style="color:#666; margin-bottom:14px;">{esc(now_kst)} (KST)</div>
+    """)
+
+    for board_name, posts in new_by_board.items():
+        if not posts:
+            continue
+
+        html.append(f"""
+        <h2 style="margin:18px 0 10px 0; font-size:16px;">{esc(board_name)} ({len(posts)}건)</h2>
+        """)
+
+        for p in posts:
+            d = f"{p['date']} " if p.get("date") else ""
+            title = p.get("title", "")
+            url = p.get("url", "")
+            summary = p.get("summary", "")
+
+            html.append(f"""
+            <div style="border:1px solid #e5e7eb; border-radius:12px; padding:12px 14px; margin:10px 0; background:#ffffff;">
+              <div style="font-size:16px; font-weight:700; margin:0 0 6px 0;">
+                {esc(d)}{esc(title)}
+              </div>
+              <div style="color:#333; line-height:1.5; margin:0 0 10px 0;">
+                {esc(summary) if summary else "<span style='color:#888;'>요약을 가져오지 못했습니다.</span>"}
+              </div>
+              <a href="{esc(url)}"
+                 style="display:inline-block; padding:8px 10px; border:1px solid #d1d5db; border-radius:10px; text-decoration:none; color:#111;">
+                 게시글 바로가기
+              </a>
+            </div>
+            """)
+
+    html.append("</div>")
 
     msg = EmailMessage()
     msg["From"] = mail_from
     msg["To"] = ", ".join(mail_to)
     msg["Subject"] = subject
-    msg.set_content("\n".join(lines))
+
+    # 텍스트 + HTML 멀티파트
+    msg.set_content("\n".join(text_lines))
+    msg.add_alternative("\n".join(html), subtype="html")
 
     context = ssl.create_default_context()
 
-    # Gmail recommended: 587 with STARTTLS
     if smtp_port == 465:
         with smtplib.SMTP_SSL(smtp_host, smtp_port, context=context, timeout=30) as s:
             s.login(smtp_user, smtp_pass)
             s.send_message(msg)
     else:
         with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as s:
-            # connect() is implicit when host/port provided and valid
             s.ehlo()
             s.starttls(context=context)
             s.ehlo()
@@ -237,8 +284,18 @@ def main():
         # 안전장치: 한 번에 너무 많이 쌓이면 최신 50개만 발송
         new_posts = new_posts[:50]
 
+        # 새 글에 대해서만 본문 요약 생성
+        for p in new_posts:
+            try:
+                body_text = fetch_post_text(p["url"])
+                p["summary"] = summarize_text(body_text, max_chars=180)
+            except Exception:
+                p["summary"] = ""
+
+        # 오래된 것부터 출력
         new_by_board[name] = list(reversed(new_posts))
 
+        # 상태 갱신(최대 500개)
         merged = list(dict.fromkeys(ids + list(seen)))
         state[name] = merged[:500]
 
@@ -254,3 +311,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
