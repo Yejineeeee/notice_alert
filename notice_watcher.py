@@ -122,6 +122,39 @@ def extract_articles(list_url: str):
     items.sort(key=sort_key, reverse=True)
     return items
 
+def fetch_post_text(post_url: str) -> str:
+    r = requests.get(post_url, headers={"User-Agent": UA}, timeout=20)
+    r.raise_for_status()
+    soup = BeautifulSoup(r.text, "lxml")
+
+    candidates = [
+        soup.select_one(".view-con"),
+        soup.select_one(".article"),
+        soup.select_one(".bbs_view"),
+        soup.select_one("#contents"),
+    ]
+    node = next((c for c in candidates if c), None)
+
+    text = node.get_text(" ", strip=True) if node else soup.get_text(" ", strip=True)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def summarize_text(text: str, max_chars: int = 180) -> str:
+    if not text:
+        return ""
+    text = text.strip()
+    if len(text) <= max_chars:
+        return text
+
+    cut = max_chars
+    for pat in ["니다.", "다.", ".", "!", "?", "요."]:
+        idx = text.rfind(pat, 0, max_chars)
+        if idx >= 60:
+            cut = idx + len(pat)
+            break
+
+    return text[:cut].rstrip() + "…"
 
 def send_email(new_by_board):
     # Defaults + validation (prevents the "empty string" issues you saw)
