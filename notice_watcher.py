@@ -12,7 +12,7 @@ from bs4 import BeautifulSoup
 
 KST = timezone(timedelta(hours=9))
 STATE_PATH = "state.json"
-UA = "Mozilla/5.0 (compatible; mju-notice-watcher/1.1)"
+UA = "Mozilla/5.0 (compatible; mju-notice-watcher/1.2)"
 
 # 게시판 태그(메일 제목 짧게)
 BOARD_TAG = {
@@ -24,9 +24,6 @@ BOARD_TAG = {
     "학생활동공지": "활동",
 }
 
-# 게시판 목록 (필요 시 fnctNo만 수정)
-# ※ 아래 URL은 “게시판 목록 페이지” 역할만 하면 됩니다.
-#   사용자가 준 subview 페이지를 그대로 써도 되고, /bbs/.../artclList.do 를 써도 됩니다.
 BOARDS = [
     {"name": "일반공지", "url": "https://www.mju.ac.kr/mjukr/255/subview.do?fnctId=bbs&fnctNo=141"},
     {"name": "행사공지", "url": "https://www.mju.ac.kr/mjukr/256/subview.do?fnctId=bbs&fnctNo=142"},
@@ -36,15 +33,48 @@ BOARDS = [
     {"name": "학생활동공지", "url": "https://www.mju.ac.kr/mjukr/5364/subview.do?fnctId=bbs&fnctNo=853"},
 ]
 
+
+def _get_env_str(key: str, default: str | None = None) -> str:
+    """Read env var as string. If missing/blank, return default (if provided) else ''."""
+    val = os.environ.get(key)
+    if val is None:
+        return (default or "")
+    val = val.strip()
+    if val == "":
+        return (default or "")
+    return val
+
+
+def _require_env_str(key: str) -> str:
+    """Read env var and require non-empty."""
+    val = _get_env_str(key, default=None)
+    if not val:
+        raise RuntimeError(f"{key} is missing or empty. Set it in GitHub Secrets.")
+    return val
+
+
+def _get_env_int(key: str, default: int) -> int:
+    """Read env var as int. If missing/blank, return default. If invalid, raise helpful error."""
+    raw = os.environ.get(key)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return int(raw.strip())
+    except ValueError as e:
+        raise RuntimeError(f"{key} must be an integer (e.g., {default}). Got: {raw!r}") from e
+
+
 def load_state():
     if not os.path.exists(STATE_PATH):
         return {}
     with open(STATE_PATH, "r", encoding="utf-8") as f:
         return json.load(f)
 
+
 def save_state(state):
     with open(STATE_PATH, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
+
 
 def extract_articles(list_url: str):
     r = requests.get(list_url, headers={"User-Agent": UA}, timeout=20)
@@ -52,7 +82,6 @@ def extract_articles(list_url: str):
     soup = BeautifulSoup(r.text, "lxml")
 
     items = []
-    # 게시글 링크는 보통 .../artclView.do 포함
     for a in soup.select('a[href*="artclView.do"]'):
         href = a.get("href", "").strip()
         if not href:
@@ -64,11 +93,9 @@ def extract_articles(list_url: str):
 
         full_url = href if href.startswith("http") else urljoin(list_url, href)
 
-        # 게시글 ID 추출(가능하면 숫자 ID로 중복 판정 안정화)
         m = re.search(r"/bbs/mjukr/\d+/(\d+)/artclView\.do", full_url)
-        artcl_id = m.group(1) if m else full_url  # 최후 fallback은 URL 자체
+        artcl_id = m.group(1) if m else full_url  # fallback
 
-        # 같은 행에서 날짜(YYYY.MM.DD) 추출
         date_text = None
         tr = a.find_parent("tr")
         if tr:
@@ -77,17 +104,16 @@ def extract_articles(list_url: str):
             if dm:
                 date_text = dm.group(1)
 
-        items.append({
-            "id": str(artcl_id),
-            "title": title,
-            "date": date_text,
-            "url": full_url,
-        })
+        items.append(
+            {
+                "id": str(artcl_id),
+                "title": title,
+                "date": date_text,
+                "url": full_url,
+            }
+        )
 
-    # ID 기준 중복 제거 후 정렬(숫자 ID면 내림차순)
-    uniq = {}
-    for it in items:
-        uniq[it["id"]] = it
+    uniq = {it["id"]: it for it in items}
     items = list(uniq.values())
 
     def sort_key(x):
@@ -96,31 +122,32 @@ def extract_articles(list_url: str):
     items.sort(key=sort_key, reverse=True)
     return items
 
-def send_email(new_by_board):
-    smtp_host = os.environ["SMTP_HOST"]
-    smtp_port = int(os.environ.get("SMTP_PORT", "587"))
-    smtp_user = os.environ["SMTP_USER"]
-    smtp_pass = os.environ["SMTP_PASS"]
 
-    mail_to = [x.strip() for x in os.environ["MAIL_TO"].split(",") if x.strip()]
-    mail_from = os.environ.get("MAIL_FROM", smtp_user)
+def send_email(new_by_board):
+    # Defaults + validation (prevents the "empty string" issues you saw)
+    smtp_host = _get_env_str("SMTP_HOST", default="smtp.gmail.com")
+    smtp_port = _get_env_int("SMTP_PORT", default=587)
+    smtp_user = _require_env_str("SMTP_USER")
+    smtp_pass = _require_env_str("SMTP_PASS")
+    mail_to_raw = _require_env_str("MAIL_TO")
+    mail_from = _get_env_str("MAIL_FROM", default=smtp_user)
+
+    mail_to = [x.strip() for x in mail_to_raw.split(",") if x.strip()]
+    if not mail_to:
+        raise RuntimeError("MAIL_TO is empty after parsing. Provide at least one email address.")
 
     now_kst = datetime.now(KST).strftime("%Y-%m-%d %H:%M")
     total = sum(len(v) for v in new_by_board.values())
 
-    # 제목 태그: 새 글이 있는 게시판만
     active_tags = []
     for board_name, posts in new_by_board.items():
         if posts:
             active_tags.append(BOARD_TAG.get(board_name, board_name))
-    tag_prefix = "".join([f"[{t}]" for t in active_tags])  # 예: [학사][장학]
+    tag_prefix = "".join([f"[{t}]" for t in active_tags])
 
     subject = f"{tag_prefix} [명지대 공지 알림] 새 게시물 {total}건 ({now_kst} KST)"
 
-    lines = []
-    lines.append(f"명지대학교 공지 새 글 알림 ({now_kst} KST)")
-    lines.append("")
-
+    lines = [f"명지대학교 공지 새 글 알림 ({now_kst} KST)", ""]
     for board_name, posts in new_by_board.items():
         if not posts:
             continue
@@ -138,21 +165,25 @@ def send_email(new_by_board):
     msg.set_content("\n".join(lines))
 
     context = ssl.create_default_context()
+
+    # Gmail recommended: 587 with STARTTLS
     if smtp_port == 465:
         with smtplib.SMTP_SSL(smtp_host, smtp_port, context=context, timeout=30) as s:
             s.login(smtp_user, smtp_pass)
             s.send_message(msg)
     else:
         with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as s:
+            # connect() is implicit when host/port provided and valid
             s.ehlo()
             s.starttls(context=context)
             s.ehlo()
             s.login(smtp_user, smtp_pass)
             s.send_message(msg)
 
+
 def main():
     state = load_state()
-    send_backlog = os.environ.get("SEND_BACKLOG", "false").lower() == "true"
+    send_backlog = _get_env_str("SEND_BACKLOG", default="false").lower() == "true"
 
     new_by_board = {}
 
@@ -173,10 +204,8 @@ def main():
         # 안전장치: 한 번에 너무 많이 쌓이면 최신 50개만 발송
         new_posts = new_posts[:50]
 
-        # 오래된 것부터 본문에 출력
         new_by_board[name] = list(reversed(new_posts))
 
-        # 상태 갱신: 최신 목록 + 과거 seen (최대 500개)
         merged = list(dict.fromkeys(ids + list(seen)))
         state[name] = merged[:500]
 
@@ -188,6 +217,7 @@ def main():
         print(f"Sent email: {total_new} new posts")
     else:
         print("No new posts")
+
 
 if __name__ == "__main__":
     main()
